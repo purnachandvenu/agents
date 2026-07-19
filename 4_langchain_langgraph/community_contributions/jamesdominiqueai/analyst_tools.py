@@ -1,336 +1,361 @@
-import os
-import re
-import json
-import glob
-import base64
-import shutil
-import logging
-from pathlib import Path
-from dotenv import load_dotenv
-from langchain.agents import Tool
-from langchain_community.agent_toolkits import FileManagementToolkit
-from langchain_community.tools.wikipedia.tool import WikipediaQueryRun
-from langchain_experimental.tools import PythonREPLTool
-from langchain_community.utilities import GoogleSerperAPIWrapper
-from langchain_community.utilities.wikipedia import WikipediaAPIWrapper
-load_dotenv(override=True)
-os.environ.setdefault("MPLBACKEND", "Agg")
-logger = logging.getLogger(__name__)
-try:
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    plt.show = lambda *args, **kwargs: None
-except Exception:
-    matplotlib = None
-
-_SCRIPT_DIR = Path(__file__).resolve().parent
-SANDBOX_DIR = _SCRIPT_DIR / "sandbox"
-SANDBOX_DIR.mkdir(exist_ok=True)
-
-def normalize_message_text(content) -> str:
-    """Convert LangChain message content (str | list[dict] | None) to a plain string."""
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict):
-                parts.append(item.get("text", str(item)))
-            else:
-                parts.append(str(item))
-        return "\n".join(parts)
-    return "" if content is None else str(content)
-
-def get_session_sandbox_dir(session_id: str) -> Path:
-    session_dir = SANDBOX_DIR / session_id
-    session_dir.mkdir(parents=True, exist_ok=True)
-    return session_dir
-def cleanup_session_sandbox(session_dir: str | Path) -> None:
-    shutil.rmtree(session_dir, ignore_errors=True)
-def get_file_tools(session_dir: str | Path):
-    toolkit = FileManagementToolkit(root_dir=str(session_dir))
-    return toolkit.get_tools()
-def copy_uploaded_file(src_path: str, filename: str, session_dir: str | Path) -> str:
-    """Copy an uploaded Gradio file into the session sandbox so the agent can access it."""
-    dest = Path(session_dir) / filename
-    shutil.copy(src_path, dest)
-    return str(dest)
-def collect_charts(session_dir: str) -> list[str]:
-    """Return paths of any .png files saved in the current session sandbox."""
-    return sorted(glob.glob(os.path.join(str(session_dir), "*.png")))
-def recover_orphaned_charts(session_dir: str | Path) -> None:
-    """
-    The PythonREPLTool executes code in the process CWD, which is usually the
-    project root — not the session sandbox.  Charts saved with a bare filename
-    (e.g. ``plt.savefig('chart.png')``) end up in the CWD.
-    This helper moves any .png files found in the CWD (and the sandbox root)
-    into the session directory so that ``collect_charts`` picks them up.
-    """
-    session_path = Path(session_dir)
-    search_dirs = {Path.cwd(), SANDBOX_DIR}
-    # Also check _SCRIPT_DIR in case the user launched from there
-    search_dirs.add(_SCRIPT_DIR)
-    for search_dir in search_dirs:
-        if not search_dir.is_dir() or search_dir == session_path:
-            continue
-        for png in search_dir.glob("*.png"):
-            dest = session_path / png.name
-            if not dest.exists():
-                try:
-                    shutil.move(str(png), str(dest))
-                    logger.info("Recovered orphaned chart %s → %s", png, dest)
-                except Exception:
-                    logger.warning("Could not move %s", png, exc_info=True)
-
-def _make_nb_cell(cell_type: str, source: str, outputs=None) -> dict:
-    """Build a single Jupyter notebook cell dict."""
-    cell = {
-        "cell_type": cell_type,
-        "metadata": {},
-        "source": source.splitlines(keepends=True) if source else [],
+{
+  "nbformat": 4,
+  "nbformat_minor": 5,
+  "metadata": {
+    "kernelspec": {
+      "display_name": "Python 3",
+      "language": "python",
+      "name": "python3"
+    },
+    "language_info": {
+      "name": "python",
+      "version": "3.10.0"
     }
-    if cell_type == "code":
-        cell["execution_count"] = None
-        cell["outputs"] = outputs or []
-    return cell
-def _png_to_nb_output(png_path: str) -> dict:
-    """Create a notebook display_data output that embeds a PNG image."""
-    with open(png_path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode("ascii")
-    return {
-        "output_type": "display_data",
-        "metadata": {},
-        "data": {
-            "image/png": b64,
-            "text/plain": [f"<Figure: {Path(png_path).name}>"],
-        },
+  },
+  "cells": [
+    {
+      "cell_type": "code",
+      "metadata": {},
+      "source": [
+        "import os\r\n",
+        "import re\r\n",
+        "import json\r\n",
+        "import glob\r\n",
+        "import base64\r\n",
+        "import shutil\r\n",
+        "import logging\r\n",
+        "from pathlib import Path\r\n",
+        "from dotenv import load_dotenv\r\n",
+        "from langchain.agents import Tool\r\n",
+        "from langchain_community.agent_toolkits import FileManagementToolkit\r\n",
+        "from langchain_community.tools.wikipedia.tool import WikipediaQueryRun\r\n",
+        "from langchain_experimental.tools import PythonREPLTool\r\n",
+        "from langchain_community.utilities import GoogleSerperAPIWrapper\r\n",
+        "from langchain_community.utilities.wikipedia import WikipediaAPIWrapper\r\n",
+        "load_dotenv(override=True)\r\n",
+        "os.environ.setdefault(\"MPLBACKEND\", \"Agg\")\r\n",
+        "logger = logging.getLogger(__name__)\r\n",
+        "try:\r\n",
+        "    import matplotlib\r\n",
+        "    matplotlib.use(\"Agg\")\r\n",
+        "    import matplotlib.pyplot as plt\r\n",
+        "    plt.show = lambda *args, **kwargs: None\r\n",
+        "except Exception:\r\n",
+        "    matplotlib = None\r\n",
+        "\r\n",
+        "_SCRIPT_DIR = Path(__file__).resolve().parent\r\n",
+        "SANDBOX_DIR = _SCRIPT_DIR / \"sandbox\"\r\n",
+        "SANDBOX_DIR.mkdir(exist_ok=True)\r\n",
+        "\r\n",
+        "def normalize_message_text(content) -> str:\r\n",
+        "    \"\"\"Convert LangChain message content (str | list[dict] | None) to a plain string.\"\"\"\r\n",
+        "    if isinstance(content, list):\r\n",
+        "        parts = []\r\n",
+        "        for item in content:\r\n",
+        "            if isinstance(item, dict):\r\n",
+        "                parts.append(item.get(\"text\", str(item)))\r\n",
+        "            else:\r\n",
+        "                parts.append(str(item))\r\n",
+        "        return \"\\n\".join(parts)\r\n",
+        "    return \"\" if content is None else str(content)\r\n",
+        "\r\n",
+        "def get_session_sandbox_dir(session_id: str) -> Path:\r\n",
+        "    session_dir = SANDBOX_DIR / session_id\r\n",
+        "    session_dir.mkdir(parents=True, exist_ok=True)\r\n",
+        "    return session_dir\r\n",
+        "def cleanup_session_sandbox(session_dir: str | Path) -> None:\r\n",
+        "    shutil.rmtree(session_dir, ignore_errors=True)\r\n",
+        "def get_file_tools(session_dir: str | Path):\r\n",
+        "    toolkit = FileManagementToolkit(root_dir=str(session_dir))\r\n",
+        "    return toolkit.get_tools()\r\n",
+        "def copy_uploaded_file(src_path: str, filename: str, session_dir: str | Path) -> str:\r\n",
+        "    \"\"\"Copy an uploaded Gradio file into the session sandbox so the agent can access it.\"\"\"\r\n",
+        "    dest = Path(session_dir) / filename\r\n",
+        "    shutil.copy(src_path, dest)\r\n",
+        "    return str(dest)\r\n",
+        "def collect_charts(session_dir: str) -> list[str]:\r\n",
+        "    \"\"\"Return paths of any .png files saved in the current session sandbox.\"\"\"\r\n",
+        "    return sorted(glob.glob(os.path.join(str(session_dir), \"*.png\")))\r\n",
+        "def recover_orphaned_charts(session_dir: str | Path) -> None:\r\n",
+        "    \"\"\"\r\n",
+        "    The PythonREPLTool executes code in the process CWD, which is usually the\r\n",
+        "    project root — not the session sandbox.  Charts saved with a bare filename\r\n",
+        "    (e.g. ``plt.savefig('chart.png')``) end up in the CWD.\r\n",
+        "    This helper moves any .png files found in the CWD (and the sandbox root)\r\n",
+        "    into the session directory so that ``collect_charts`` picks them up.\r\n",
+        "    \"\"\"\r\n",
+        "    session_path = Path(session_dir)\r\n",
+        "    search_dirs = {Path.cwd(), SANDBOX_DIR}\r\n",
+        "    # Also check _SCRIPT_DIR in case the user launched from there\r\n",
+        "    search_dirs.add(_SCRIPT_DIR)\r\n",
+        "    for search_dir in search_dirs:\r\n",
+        "        if not search_dir.is_dir() or search_dir == session_path:\r\n",
+        "            continue\r\n",
+        "        for png in search_dir.glob(\"*.png\"):\r\n",
+        "            dest = session_path / png.name\r\n",
+        "            if not dest.exists():\r\n",
+        "                try:\r\n",
+        "                    shutil.move(str(png), str(dest))\r\n",
+        "                    logger.info(\"Recovered orphaned chart %s → %s\", png, dest)\r\n",
+        "                except Exception:\r\n",
+        "                    logger.warning(\"Could not move %s\", png, exc_info=True)\r\n",
+        "\r\n",
+        "def _make_nb_cell(cell_type: str, source: str, outputs=None) -> dict:\r\n",
+        "    \"\"\"Build a single Jupyter notebook cell dict.\"\"\"\r\n",
+        "    cell = {\r\n",
+        "        \"cell_type\": cell_type,\r\n",
+        "        \"metadata\": {},\r\n",
+        "        \"source\": source.splitlines(keepends=True) if source else [],\r\n",
+        "    }\r\n",
+        "    if cell_type == \"code\":\r\n",
+        "        cell[\"execution_count\"] = None\r\n",
+        "        cell[\"outputs\"] = outputs or []\r\n",
+        "    return cell\r\n",
+        "def _png_to_nb_output(png_path: str) -> dict:\r\n",
+        "    \"\"\"Create a notebook display_data output that embeds a PNG image.\"\"\"\r\n",
+        "    with open(png_path, \"rb\") as f:\r\n",
+        "        b64 = base64.b64encode(f.read()).decode(\"ascii\")\r\n",
+        "    return {\r\n",
+        "        \"output_type\": \"display_data\",\r\n",
+        "        \"metadata\": {},\r\n",
+        "        \"data\": {\r\n",
+        "            \"image/png\": b64,\r\n",
+        "            \"text/plain\": [f\"<Figure: {Path(png_path).name}>\"],\r\n",
+        "        },\r\n",
+        "    }\r\n",
+        "def build_notebook(\r\n",
+        "    session_dir: str,\r\n",
+        "    analyst_summary: str,\r\n",
+        "    code_snippets: list[str] | None = None,\r\n",
+        "    dataset_filename: str | None = None,\r\n",
+        ") -> str:\r\n",
+        "    \"\"\"\r\n",
+        "    Build an .ipynb file that bundles:\r\n",
+        "      - a markdown cell with the analyst's summary / findings\r\n",
+        "      - code cells for each Python snippet the agent ran\r\n",
+        "      - inline chart images (embedded as base64 display_data outputs)\r\n",
+        "    Returns the absolute path to the saved notebook.\r\n",
+        "    \"\"\"\r\n",
+        "    cells: list[dict] = []\r\n",
+        "    cells.append(_make_nb_cell(\r\n",
+        "        \"markdown\",\r\n",
+        "        \"# Data Analysis Report\\n\\n*Auto-generated by Data Analyst Agent*\",\r\n",
+        "    ))\r\n",
+        "    if dataset_filename:\r\n",
+        "        cells.append(_make_nb_cell(\"markdown\", f\"**Dataset:** `{dataset_filename}`\"))\r\n",
+        "    if code_snippets:\r\n",
+        "        cells.append(_make_nb_cell(\"markdown\", \"## Analysis Code\"))\r\n",
+        "        for snippet in code_snippets:\r\n",
+        "            cells.append(_make_nb_cell(\"code\", snippet))\r\n",
+        "    chart_paths = collect_charts(session_dir)\r\n",
+        "    if chart_paths:\r\n",
+        "        cells.append(_make_nb_cell(\"markdown\", \"## Charts\"))\r\n",
+        "        for chart_path in chart_paths:\r\n",
+        "            try:\r\n",
+        "                output = _png_to_nb_output(chart_path)\r\n",
+        "                chart_name = Path(chart_path).stem\r\n",
+        "                cells.append(_make_nb_cell(\r\n",
+        "                    \"code\",\r\n",
+        "                    (\r\n",
+        "                        f\"# Chart: {chart_name}\\n\"\r\n",
+        "                        f\"from IPython.display import Image, display\\n\"\r\n",
+        "                        f\"display(Image(filename=r'{chart_path}'))\"\r\n",
+        "                    ),\r\n",
+        "                    outputs=[output],\r\n",
+        "                ))\r\n",
+        "            except Exception:\r\n",
+        "                logger.warning(\"Could not embed chart %s\", chart_path, exc_info=True)\r\n",
+        "    cells.append(_make_nb_cell(\"markdown\", f\"## Findings\\n\\n{analyst_summary}\"))\r\n",
+        "    notebook = {\r\n",
+        "        \"nbformat\": 4,\r\n",
+        "        \"nbformat_minor\": 5,\r\n",
+        "        \"metadata\": {\r\n",
+        "            \"kernelspec\": {\r\n",
+        "                \"display_name\": \"Python 3\",\r\n",
+        "                \"language\": \"python\",\r\n",
+        "                \"name\": \"python3\",\r\n",
+        "            },\r\n",
+        "            \"language_info\": {\"name\": \"python\", \"version\": \"3.11.0\"},\r\n",
+        "        },\r\n",
+        "        \"cells\": cells,\r\n",
+        "    }\r\n",
+        "    nb_path = os.path.join(session_dir, \"analysis_report.ipynb\")\r\n",
+        "    with open(nb_path, \"w\", encoding=\"utf-8\") as f:\r\n",
+        "        json.dump(notebook, f, indent=1, ensure_ascii=False)\r\n",
+        "    logger.info(\"Notebook saved to %s\", nb_path)\r\n",
+        "    return nb_path\r\n",
+        "\r\n",
+        "def build_html_report(\r\n",
+        "    session_dir: str,\r\n",
+        "    analyst_summary: str,\r\n",
+        "    dataset_filename: str | None = None,\r\n",
+        ") -> str:\r\n",
+        "    \"\"\"\r\n",
+        "    Build a self-contained HTML report with:\r\n",
+        "      - the analyst's markdown findings rendered as HTML\r\n",
+        "      - charts embedded as base64 <img> tags\r\n",
+        "    Returns the HTML string (also saved to disk).\r\n",
+        "    \"\"\"\r\n",
+        "    summary_html = _md_to_simple_html(analyst_summary)\r\n",
+        "    chart_paths = collect_charts(session_dir)\r\n",
+        "    charts_html = \"\"\r\n",
+        "    for cp in chart_paths:\r\n",
+        "        try:\r\n",
+        "            with open(cp, \"rb\") as f:\r\n",
+        "                b64 = base64.b64encode(f.read()).decode(\"ascii\")\r\n",
+        "            name = Path(cp).stem.replace(\"_\", \" \").title()\r\n",
+        "            charts_html += (\r\n",
+        "                f'<div class=\"chart\"><h3>{name}</h3>'\r\n",
+        "                f'<img src=\"data:image/png;base64,{b64}\" alt=\"{name}\" /></div>\\n'\r\n",
+        "            )\r\n",
+        "        except Exception:\r\n",
+        "            logger.warning(\"Could not embed chart %s in HTML\", cp, exc_info=True)\r\n",
+        "    ds_label = (\r\n",
+        "        f\"<p class='meta'>Dataset: <code>{dataset_filename}</code></p>\"\r\n",
+        "        if dataset_filename else \"\"\r\n",
+        "    )\r\n",
+        "    html = (\r\n",
+        "        \"<div style='font-family:Inter,Segoe UI,system-ui,sans-serif;\"\r\n",
+        "        \"width:100%;padding:1rem;color:#1e293b;box-sizing:border-box;'>\"\r\n",
+        "        \"<style>\\n\"\r\n",
+        "        \".rpt h1{font-size:1.4rem;color:#3730a3;border-bottom:2px solid #c7d2fe;\"\r\n",
+        "        \"padding-bottom:.4rem;margin-top:0}\\n\"\r\n",
+        "        \".rpt h2{font-size:1.15rem;color:#3730a3;margin-top:1.5rem}\\n\"\r\n",
+        "        \".rpt h3{font-size:1rem;color:#1e293b;font-weight:600}\\n\"\r\n",
+        "        \".rpt .meta{color:#475569;font-size:.85rem}\\n\"\r\n",
+        "        \".rpt .chart{margin:1rem 0}\\n\"\r\n",
+        "        \".rpt .chart img{max-width:100%;border-radius:10px;\"\r\n",
+        "        \"box-shadow:0 2px 12px rgba(0,0,0,.06);margin:.4rem 0 1rem}\\n\"\r\n",
+        "        \".rpt .findings{background:#f8faff;padding:1.2rem;\"\r\n",
+        "        \"border-radius:10px;border:1px solid #e0e7ff;margin-top:.8rem}\\n\"\r\n",
+        "        \".rpt .findings h1,.rpt .findings h2,.rpt .findings h3{\"\r\n",
+        "        \"color:#1e3a5f}\\n\"\r\n",
+        "        \".rpt .findings p,.rpt .findings li,.rpt .findings span{\"\r\n",
+        "        \"color:#1e293b}\\n\"\r\n",
+        "        \".rpt .findings strong{color:#0f172a}\\n\"\r\n",
+        "        \".rpt code{background:#e0e7ff;padding:2px 6px;border-radius:4px;\"\r\n",
+        "        \"font-size:.88em;color:#3730a3}\\n\"\r\n",
+        "        \".rpt pre{background:#f1f5f9;padding:.8rem;border-radius:8px;\"\r\n",
+        "        \"overflow-x:auto;font-size:.85em;color:#1e293b}\\n\"\r\n",
+        "        \".rpt ul,.rpt ol{padding-left:1.4rem}\"\r\n",
+        "        \".rpt li{margin-bottom:.25rem;line-height:1.6;color:#1e293b}\\n\"\r\n",
+        "        \".rpt p{line-height:1.6;color:#1e293b}\\n\"\r\n",
+        "        \"</style>\\n\"\r\n",
+        "        f\"<div class='rpt'>\\n<h1>Data Analysis Report</h1>\\n{ds_label}\\n\"\r\n",
+        "    )\r\n",
+        "    if charts_html:\r\n",
+        "        html += f\"<h2>Charts</h2>\\n{charts_html}\\n\"\r\n",
+        "    html += (\r\n",
+        "        f\"<h2>Findings</h2>\\n<div class='findings'>\\n{summary_html}\\n</div>\\n\"\r\n",
+        "        \"<p class='meta' style='margin-top:2rem;text-align:center;color:#64748b'>\"\r\n",
+        "        \"Generated by Data Analyst Agent</p>\\n</div>\\n</div>\"\r\n",
+        "    )\r\n",
+        "    html_path = os.path.join(session_dir, \"analysis_report.html\")\r\n",
+        "    with open(html_path, \"w\", encoding=\"utf-8\") as f:\r\n",
+        "        f.write(html)\r\n",
+        "    logger.info(\"HTML report saved to %s\", html_path)\r\n",
+        "    return html\r\n",
+        "def _md_to_simple_html(text: str) -> str:\r\n",
+        "    \"\"\"Minimal markdown-to-HTML conversion for analyst output.\"\"\"\r\n",
+        "    if not text:\r\n",
+        "        return \"\"\r\n",
+        "    lines = text.split(\"\\n\")\r\n",
+        "    out: list[str] = []\r\n",
+        "    in_ul = False\r\n",
+        "    in_ol = False\r\n",
+        "    in_code = False\r\n",
+        "    for line in lines:\r\n",
+        "        s = line.strip()\r\n",
+        "        if s.startswith(\"```\"):\r\n",
+        "            if in_code:\r\n",
+        "                out.append(\"</code></pre>\")\r\n",
+        "            else:\r\n",
+        "                out.append(\"<pre><code>\")\r\n",
+        "            in_code = not in_code\r\n",
+        "            continue\r\n",
+        "        if in_code:\r\n",
+        "            out.append(line)\r\n",
+        "            continue\r\n",
+        "        if s.startswith(\"### \"):\r\n",
+        "            if in_ul: out.append(\"</ul>\"); in_ul = False\r\n",
+        "            if in_ol: out.append(\"</ol>\"); in_ol = False\r\n",
+        "            out.append(f\"<h3>{_inline_fmt(s[4:])}</h3>\"); continue\r\n",
+        "        if s.startswith(\"## \"):\r\n",
+        "            if in_ul: out.append(\"</ul>\"); in_ul = False\r\n",
+        "            if in_ol: out.append(\"</ol>\"); in_ol = False\r\n",
+        "            out.append(f\"<h2>{_inline_fmt(s[3:])}</h2>\"); continue\r\n",
+        "        if s.startswith(\"# \"):\r\n",
+        "            if in_ul: out.append(\"</ul>\"); in_ul = False\r\n",
+        "            if in_ol: out.append(\"</ol>\"); in_ol = False\r\n",
+        "            out.append(f\"<h1>{_inline_fmt(s[2:])}</h1>\"); continue\r\n",
+        "        if s.startswith(\"- \") or s.startswith(\"* \"):\r\n",
+        "            if in_ol: out.append(\"</ol>\"); in_ol = False\r\n",
+        "            if not in_ul: out.append(\"<ul>\"); in_ul = True\r\n",
+        "            out.append(f\"<li>{_inline_fmt(s[2:])}</li>\"); continue\r\n",
+        "        m = re.match(r\"^(\\d+)\\.\\s+(.+)$\", s)\r\n",
+        "        if m:\r\n",
+        "            if in_ul: out.append(\"</ul>\"); in_ul = False\r\n",
+        "            if not in_ol: out.append(\"<ol>\"); in_ol = True\r\n",
+        "            out.append(f\"<li>{_inline_fmt(m.group(2))}</li>\"); continue\r\n",
+        "        if in_ul: out.append(\"</ul>\"); in_ul = False\r\n",
+        "        if in_ol: out.append(\"</ol>\"); in_ol = False\r\n",
+        "        if not s:\r\n",
+        "            out.append(\"\"); continue\r\n",
+        "        out.append(f\"<p>{_inline_fmt(s)}</p>\")\r\n",
+        "    if in_ul: out.append(\"</ul>\")\r\n",
+        "    if in_ol: out.append(\"</ol>\")\r\n",
+        "    if in_code: out.append(\"</code></pre>\")\r\n",
+        "    return \"\\n\".join(out)\r\n",
+        "def _inline_fmt(text: str) -> str:\r\n",
+        "    \"\"\"Apply bold and inline-code markdown formatting.\"\"\"\r\n",
+        "    text = re.sub(r\"\\*\\*(.+?)\\*\\*\", r\"<strong>\\1</strong>\", text)\r\n",
+        "    text = re.sub(r\"`(.+?)`\", r\"<code>\\1</code>\", text)\r\n",
+        "    return text\r\n",
+        "\r\n",
+        "def extract_python_snippets(messages) -> list[str]:\r\n",
+        "    \"\"\"\r\n",
+        "    Walk through LangChain messages and pull out the Python code that was\r\n",
+        "    sent to the PythonREPLTool (via tool_calls).\r\n",
+        "    \"\"\"\r\n",
+        "    from langchain_core.messages import AIMessage\r\n",
+        "    snippets: list[str] = []\r\n",
+        "    for msg in messages:\r\n",
+        "        if isinstance(msg, AIMessage) and hasattr(msg, \"tool_calls\") and msg.tool_calls:\r\n",
+        "            for tc in msg.tool_calls:\r\n",
+        "                name = tc.get(\"name\", \"\")\r\n",
+        "                if \"python\" in name.lower():\r\n",
+        "                    args = tc.get(\"args\", {})\r\n",
+        "                    code = (\r\n",
+        "                        args.get(\"command\")\r\n",
+        "                        or args.get(\"code\")\r\n",
+        "                        or args.get(\"query\")\r\n",
+        "                        or \"\"\r\n",
+        "                    )\r\n",
+        "                    if code.strip():\r\n",
+        "                        snippets.append(code.strip())\r\n",
+        "    return snippets\r\n",
+        "\r\n",
+        "def get_analyst_tools(session_dir: str | Path, enable_web_search: bool | None = None):\r\n",
+        "    file_tools = get_file_tools(session_dir)\r\n",
+        "    tools = list(file_tools)\r\n",
+        "    if enable_web_search is None:\r\n",
+        "        enable_web_search = bool(os.getenv(\"SERPER_API_KEY\"))\r\n",
+        "    if enable_web_search:\r\n",
+        "        serper = GoogleSerperAPIWrapper()\r\n",
+        "        search_tool = Tool(\r\n",
+        "            name=\"web_search\",\r\n",
+        "            func=serper.run,\r\n",
+        "            description=\"Search the web for context about data, industry benchmarks, or methodology questions.\",\r\n",
+        "        )\r\n",
+        "        tools.append(search_tool)\r\n",
+        "    wikipedia = WikipediaAPIWrapper()\r\n",
+        "    wiki_tool = WikipediaQueryRun(api_wrapper=wikipedia)\r\n",
+        "    python_repl = PythonREPLTool()\r\n",
+        "    tools.extend([python_repl, wiki_tool])\r\n",
+        "    return tools"
+      ],
+      "outputs": [],
+      "execution_count": null
     }
-def build_notebook(
-    session_dir: str,
-    analyst_summary: str,
-    code_snippets: list[str] | None = None,
-    dataset_filename: str | None = None,
-) -> str:
-    """
-    Build an .ipynb file that bundles:
-      - a markdown cell with the analyst's summary / findings
-      - code cells for each Python snippet the agent ran
-      - inline chart images (embedded as base64 display_data outputs)
-    Returns the absolute path to the saved notebook.
-    """
-    cells: list[dict] = []
-    cells.append(_make_nb_cell(
-        "markdown",
-        "# Data Analysis Report\n\n*Auto-generated by Data Analyst Agent*",
-    ))
-    if dataset_filename:
-        cells.append(_make_nb_cell("markdown", f"**Dataset:** `{dataset_filename}`"))
-    if code_snippets:
-        cells.append(_make_nb_cell("markdown", "## Analysis Code"))
-        for snippet in code_snippets:
-            cells.append(_make_nb_cell("code", snippet))
-    chart_paths = collect_charts(session_dir)
-    if chart_paths:
-        cells.append(_make_nb_cell("markdown", "## Charts"))
-        for chart_path in chart_paths:
-            try:
-                output = _png_to_nb_output(chart_path)
-                chart_name = Path(chart_path).stem
-                cells.append(_make_nb_cell(
-                    "code",
-                    (
-                        f"# Chart: {chart_name}\n"
-                        f"from IPython.display import Image, display\n"
-                        f"display(Image(filename=r'{chart_path}'))"
-                    ),
-                    outputs=[output],
-                ))
-            except Exception:
-                logger.warning("Could not embed chart %s", chart_path, exc_info=True)
-    cells.append(_make_nb_cell("markdown", f"## Findings\n\n{analyst_summary}"))
-    notebook = {
-        "nbformat": 4,
-        "nbformat_minor": 5,
-        "metadata": {
-            "kernelspec": {
-                "display_name": "Python 3",
-                "language": "python",
-                "name": "python3",
-            },
-            "language_info": {"name": "python", "version": "3.11.0"},
-        },
-        "cells": cells,
-    }
-    nb_path = os.path.join(session_dir, "analysis_report.ipynb")
-    with open(nb_path, "w", encoding="utf-8") as f:
-        json.dump(notebook, f, indent=1, ensure_ascii=False)
-    logger.info("Notebook saved to %s", nb_path)
-    return nb_path
-
-def build_html_report(
-    session_dir: str,
-    analyst_summary: str,
-    dataset_filename: str | None = None,
-) -> str:
-    """
-    Build a self-contained HTML report with:
-      - the analyst's markdown findings rendered as HTML
-      - charts embedded as base64 <img> tags
-    Returns the HTML string (also saved to disk).
-    """
-    summary_html = _md_to_simple_html(analyst_summary)
-    chart_paths = collect_charts(session_dir)
-    charts_html = ""
-    for cp in chart_paths:
-        try:
-            with open(cp, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode("ascii")
-            name = Path(cp).stem.replace("_", " ").title()
-            charts_html += (
-                f'<div class="chart"><h3>{name}</h3>'
-                f'<img src="data:image/png;base64,{b64}" alt="{name}" /></div>\n'
-            )
-        except Exception:
-            logger.warning("Could not embed chart %s in HTML", cp, exc_info=True)
-    ds_label = (
-        f"<p class='meta'>Dataset: <code>{dataset_filename}</code></p>"
-        if dataset_filename else ""
-    )
-    html = (
-        "<div style='font-family:Inter,Segoe UI,system-ui,sans-serif;"
-        "width:100%;padding:1rem;color:#1e293b;box-sizing:border-box;'>"
-        "<style>\n"
-        ".rpt h1{font-size:1.4rem;color:#3730a3;border-bottom:2px solid #c7d2fe;"
-        "padding-bottom:.4rem;margin-top:0}\n"
-        ".rpt h2{font-size:1.15rem;color:#3730a3;margin-top:1.5rem}\n"
-        ".rpt h3{font-size:1rem;color:#1e293b;font-weight:600}\n"
-        ".rpt .meta{color:#475569;font-size:.85rem}\n"
-        ".rpt .chart{margin:1rem 0}\n"
-        ".rpt .chart img{max-width:100%;border-radius:10px;"
-        "box-shadow:0 2px 12px rgba(0,0,0,.06);margin:.4rem 0 1rem}\n"
-        ".rpt .findings{background:#f8faff;padding:1.2rem;"
-        "border-radius:10px;border:1px solid #e0e7ff;margin-top:.8rem}\n"
-        ".rpt .findings h1,.rpt .findings h2,.rpt .findings h3{"
-        "color:#1e3a5f}\n"
-        ".rpt .findings p,.rpt .findings li,.rpt .findings span{"
-        "color:#1e293b}\n"
-        ".rpt .findings strong{color:#0f172a}\n"
-        ".rpt code{background:#e0e7ff;padding:2px 6px;border-radius:4px;"
-        "font-size:.88em;color:#3730a3}\n"
-        ".rpt pre{background:#f1f5f9;padding:.8rem;border-radius:8px;"
-        "overflow-x:auto;font-size:.85em;color:#1e293b}\n"
-        ".rpt ul,.rpt ol{padding-left:1.4rem}"
-        ".rpt li{margin-bottom:.25rem;line-height:1.6;color:#1e293b}\n"
-        ".rpt p{line-height:1.6;color:#1e293b}\n"
-        "</style>\n"
-        f"<div class='rpt'>\n<h1>Data Analysis Report</h1>\n{ds_label}\n"
-    )
-    if charts_html:
-        html += f"<h2>Charts</h2>\n{charts_html}\n"
-    html += (
-        f"<h2>Findings</h2>\n<div class='findings'>\n{summary_html}\n</div>\n"
-        "<p class='meta' style='margin-top:2rem;text-align:center;color:#64748b'>"
-        "Generated by Data Analyst Agent</p>\n</div>\n</div>"
-    )
-    html_path = os.path.join(session_dir, "analysis_report.html")
-    with open(html_path, "w", encoding="utf-8") as f:
-        f.write(html)
-    logger.info("HTML report saved to %s", html_path)
-    return html
-def _md_to_simple_html(text: str) -> str:
-    """Minimal markdown-to-HTML conversion for analyst output."""
-    if not text:
-        return ""
-    lines = text.split("\n")
-    out: list[str] = []
-    in_ul = False
-    in_ol = False
-    in_code = False
-    for line in lines:
-        s = line.strip()
-        if s.startswith("```"):
-            if in_code:
-                out.append("</code></pre>")
-            else:
-                out.append("<pre><code>")
-            in_code = not in_code
-            continue
-        if in_code:
-            out.append(line)
-            continue
-        if s.startswith("### "):
-            if in_ul: out.append("</ul>"); in_ul = False
-            if in_ol: out.append("</ol>"); in_ol = False
-            out.append(f"<h3>{_inline_fmt(s[4:])}</h3>"); continue
-        if s.startswith("## "):
-            if in_ul: out.append("</ul>"); in_ul = False
-            if in_ol: out.append("</ol>"); in_ol = False
-            out.append(f"<h2>{_inline_fmt(s[3:])}</h2>"); continue
-        if s.startswith("# "):
-            if in_ul: out.append("</ul>"); in_ul = False
-            if in_ol: out.append("</ol>"); in_ol = False
-            out.append(f"<h1>{_inline_fmt(s[2:])}</h1>"); continue
-        if s.startswith("- ") or s.startswith("* "):
-            if in_ol: out.append("</ol>"); in_ol = False
-            if not in_ul: out.append("<ul>"); in_ul = True
-            out.append(f"<li>{_inline_fmt(s[2:])}</li>"); continue
-        m = re.match(r"^(\d+)\.\s+(.+)$", s)
-        if m:
-            if in_ul: out.append("</ul>"); in_ul = False
-            if not in_ol: out.append("<ol>"); in_ol = True
-            out.append(f"<li>{_inline_fmt(m.group(2))}</li>"); continue
-        if in_ul: out.append("</ul>"); in_ul = False
-        if in_ol: out.append("</ol>"); in_ol = False
-        if not s:
-            out.append(""); continue
-        out.append(f"<p>{_inline_fmt(s)}</p>")
-    if in_ul: out.append("</ul>")
-    if in_ol: out.append("</ol>")
-    if in_code: out.append("</code></pre>")
-    return "\n".join(out)
-def _inline_fmt(text: str) -> str:
-    """Apply bold and inline-code markdown formatting."""
-    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
-    text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
-    return text
-
-def extract_python_snippets(messages) -> list[str]:
-    """
-    Walk through LangChain messages and pull out the Python code that was
-    sent to the PythonREPLTool (via tool_calls).
-    """
-    from langchain_core.messages import AIMessage
-    snippets: list[str] = []
-    for msg in messages:
-        if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls") and msg.tool_calls:
-            for tc in msg.tool_calls:
-                name = tc.get("name", "")
-                if "python" in name.lower():
-                    args = tc.get("args", {})
-                    code = (
-                        args.get("command")
-                        or args.get("code")
-                        or args.get("query")
-                        or ""
-                    )
-                    if code.strip():
-                        snippets.append(code.strip())
-    return snippets
-
-def get_analyst_tools(session_dir: str | Path, enable_web_search: bool | None = None):
-    file_tools = get_file_tools(session_dir)
-    tools = list(file_tools)
-    if enable_web_search is None:
-        enable_web_search = bool(os.getenv("SERPER_API_KEY"))
-    if enable_web_search:
-        serper = GoogleSerperAPIWrapper()
-        search_tool = Tool(
-            name="web_search",
-            func=serper.run,
-            description="Search the web for context about data, industry benchmarks, or methodology questions.",
-        )
-        tools.append(search_tool)
-    wikipedia = WikipediaAPIWrapper()
-    wiki_tool = WikipediaQueryRun(api_wrapper=wikipedia)
-    python_repl = PythonREPLTool()
-    tools.extend([python_repl, wiki_tool])
-    return tools
+  ]
+}
